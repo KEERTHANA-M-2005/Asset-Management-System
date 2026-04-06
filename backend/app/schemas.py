@@ -1,4 +1,5 @@
 from pydantic import BaseModel
+from datetime import datetime
 
 
 # Employee Schemas
@@ -13,7 +14,7 @@ class EmployeeResponse(BaseModel):
     department: str
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 
 # Asset Schemas
@@ -27,4 +28,29 @@ class AssetResponse(BaseModel):
     asset_status: str
 
     class Config:
-        orm_mode = True
+        from_attributes = True
+
+
+# Assignment Schemas
+class AssignmentCreate(BaseModel):
+    asset_id: int
+    employee_id: int
+
+
+class AssignmentResponse(BaseModel):
+    assignment_id: int
+    asset_id: int
+    employee_id: int
+    assigned_date: datetime
+    returned_date: datetime | None
+    status: str
+    asset: AssetResponse | None
+    employee: EmployeeResponse | None
+
+    class Config:
+        from_attributes = True
+
+
+class AssignmentReturn(BaseModel):
+    returned_date: datetime
+        
