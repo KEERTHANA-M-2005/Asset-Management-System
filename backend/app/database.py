@@ -1,9 +1,11 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
+import os
 
-DATABASE_URL = "postgresql://postgres:Postgre@localhost:5432/assettrackpro_db"
+DB_PATH = os.path.join(os.path.dirname(__file__), "..", "assettrack.db")
+DATABASE_URL = f"sqlite:///{os.path.abspath(DB_PATH)}"
 
-engine = create_engine(DATABASE_URL)
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 
 SessionLocal = sessionmaker(
     bind=engine,

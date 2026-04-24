@@ -1,23 +1,54 @@
 from pydantic import BaseModel
 from datetime import datetime
+from typing import Optional
 
 
-# Employee Schemas
+# ── Auth ──────────────────────────────────────────────────────────────────────
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class SignupRequest(BaseModel):
+    full_name: str
+    email: str
+    password: str
+    role: str          # "admin" or "employee"
+    department: Optional[str] = None  # required when role == "employee"
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    role: str
+    user_id: int
+    email: str
+    employee_id: Optional[int] = None
+
+
+# ── Employee ──────────────────────────────────────────────────────────────────
+
 class EmployeeCreate(BaseModel):
     employee_name: str
     department: str
+    email: str
+    password: str
 
 
 class EmployeeResponse(BaseModel):
     employee_id: int
     employee_name: str
     department: str
+    email: Optional[str] = None
+    user_id: Optional[int] = None
 
     class Config:
         from_attributes = True
 
 
-# Asset Schemas
+# ── Asset ─────────────────────────────────────────────────────────────────────
+
 class AssetCreate(BaseModel):
     asset_name: str
 
@@ -31,7 +62,8 @@ class AssetResponse(BaseModel):
         from_attributes = True
 
 
-# Assignment Schemas
+# ── Assignment ────────────────────────────────────────────────────────────────
+
 class AssignmentCreate(BaseModel):
     asset_id: int
     employee_id: int
@@ -42,10 +74,10 @@ class AssignmentResponse(BaseModel):
     asset_id: int
     employee_id: int
     assigned_date: datetime
-    returned_date: datetime | None
+    returned_date: Optional[datetime] = None
     status: str
-    asset: AssetResponse | None
-    employee: EmployeeResponse | None
+    asset: Optional[AssetResponse] = None
+    employee: Optional[EmployeeResponse] = None
 
     class Config:
         from_attributes = True
@@ -53,4 +85,3 @@ class AssignmentResponse(BaseModel):
 
 class AssignmentReturn(BaseModel):
     returned_date: datetime
-        

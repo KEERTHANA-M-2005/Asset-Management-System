@@ -1,67 +1,55 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from ..database import SessionLocal
+
 from .. import models, schemas
-from ..security import RequirePrivilege
+from ..security import get_db, get_current_user, require_role
 
-router = APIRouter(
-    prefix="/api/assets",
-    tags=["Assets"]
-)
-
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+router = APIRouter(prefix="/api/assets", tags=["Assets"])
 
 
 @router.post("/", response_model=schemas.AssetResponse)
 def create_asset(
     asset: schemas.AssetCreate,
     db: Session = Depends(get_db),
-    # user = Depends(RequirePrivilege("create:asset"))
+    _: models.User = Depends(require_role("admin")),
 ):
-    """
-    Create a new asset.
-    Only users with 'create:asset' privilege can access.
-    """
     new_asset = models.Asset(**asset.dict())
-
     db.add(new_asset)
     db.commit()
     db.refresh(new_asset)
-
     return new_asset
 
 
 @router.get("/", response_model=list[schemas.AssetResponse])
-def get_assets(db: Session = Depends(get_db)):
-    """
-    Retrieve all assets.
-    """
-    return db.query(models.Asset).all()
-
-
-@router.delete("/{id}")
-def delete_asset(
-    id: int,
+def get_assets(
     db: Session = Depends(get_db),
-    # user = Depends(RequirePrivilege("delete:asset"))
+    current_user: models.User = Depends(get_current_user),
 ):
-    """
-    Delete an asset.
-    Only users with 'delete:asset' privilege can access.
-    """
+    if current_user.role.role_name.lower() == "admin":
+        return db.query(models.Asset).all()
 
-    asset = db.query(models.Asset).filter(models.Asset.asset_id == id).first()
+    # Employee: only assets currently assigned to them
+    assigned_ids = [
+        row[0]
+        for row in db.query(models.Assignment.asset_id)
+        .filter(
+            models.Assignment.employee_id == current_user.employee_id,
+            models.Assignment.status == "ASSIGNED",
+        )
+        .all()
+    ]
+    return db.query(models.Asset).filter(models.Asset.asset_id.in_(assigned_ids)).all()
 
+
+@router.delete("/{asset_id}")
+def delete_asset(
+    asset_id: int,
+    db: Session = Depends(get_db),
+    _: models.User = Depends(require_role("admin")),
+):
+    asset = db.query(models.Asset).filter(models.Asset.asset_id == asset_id).first()
     if not asset:
-        return {"message": "Asset not found"}
-
+        raise HTTPException(status_code=404, detail="Asset not found")
     db.delete(asset)
     db.commit()
-
     return {"message": "Asset deleted successfully"}

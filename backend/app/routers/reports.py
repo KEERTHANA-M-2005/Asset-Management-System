@@ -1,100 +1,81 @@
 from collections import Counter
 from datetime import datetime, timedelta
+import csv
+import io
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from ..database import SessionLocal
 from .. import models
+from ..security import get_db, get_current_user
 
-router = APIRouter(
-    prefix="/api/reports",
-    tags=["Reports"]
-)
+router = APIRouter(prefix="/api/reports", tags=["Reports"])
 
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-@router.get("/")
-def get_reports(period: str = "30d", db: Session = Depends(get_db)):
+def _build_report_data(assignments, assets, is_admin: bool, period: str):
     now = datetime.utcnow()
-    period_map = {
-        "7d": 7,
-        "30d": 30,
-        "90d": 90,
-        "1y": 365,
-    }
-    days = period_map.get(period, 30)
+    days = {"7d": 7, "30d": 30, "90d": 90, "1y": 365}.get(period, 30)
     cutoff = now - timedelta(days=days)
 
-    assets = db.query(models.Asset).all()
-    employees = db.query(models.Employee).all()
-    assignments = db.query(models.Assignment).all()
-
     total_assets = len(assets)
-    total_employees = len(employees)
-    active_assignments = sum(1 for assignment in assignments if assignment.status == "ASSIGNED")
-    available_assets = sum(1 for asset in assets if asset.asset_status == "AVAILABLE")
+    active_assignments = sum(1 for a in assignments if a.status == "ASSIGNED")
+    available_assets = sum(1 for a in assets if a.asset_status == "AVAILABLE")
     overdue_returns = sum(
-        1
-        for assignment in assignments
-        if assignment.status == "ASSIGNED" and assignment.assigned_date < cutoff
+        1 for a in assignments
+        if a.status == "ASSIGNED" and a.assigned_date < cutoff
     )
 
-    status_counts = Counter((asset.asset_status or "UNKNOWN").upper() for asset in assets)
-    asset_status_distribution = []
-    for status, count in status_counts.items():
-        percentage = round((count / total_assets) * 100, 2) if total_assets else 0.0
-        asset_status_distribution.append({
-            "status": status.title(),
-            "count": count,
-            "percentage": percentage,
-        })
-
-    department_counts = Counter()
-    for assignment in assignments:
-        if assignment.employee and assignment.employee.department:
-            department_counts[assignment.employee.department] += 1
-
-    department_usage = []
-    for department, count in department_counts.items():
-        percentage = round((count / total_assets) * 100, 2) if total_assets else 0.0
-        department_usage.append({
-            "department": department,
-            "assetCount": count,
-            "percentage": percentage,
-        })
-
-    recent_activity = []
-    for assignment in assignments:
-        if assignment.assigned_date:
-            recent_activity.append({
-                "description": f"{assignment.employee.employee_name if assignment.employee else 'Unknown employee'} assigned {assignment.asset.asset_name if assignment.asset else 'Unknown asset'}",
-                "timestamp": assignment.assigned_date.isoformat(),
-            })
-        if assignment.returned_date:
-            recent_activity.append({
-                "description": f"{assignment.employee.employee_name if assignment.employee else 'Unknown employee'} returned {assignment.asset.asset_name if assignment.asset else 'Unknown asset'}",
-                "timestamp": assignment.returned_date.isoformat(),
-            })
-
-    recent_activity.sort(key=lambda item: item["timestamp"], reverse=True)
-    recent_activity = recent_activity[:5]
-
-    asset_type_counts = Counter((getattr(asset, "asset_type", None) or "Unknown").title() for asset in assets)
-    asset_types = [
+    status_counts = Counter((a.asset_status or "UNKNOWN").upper() for a in assets)
+    asset_status_distribution = [
         {
-            "type": asset_type,
-            "count": count,
+            "status": s.title(),
+            "count": c,
+            "percentage": round((c / total_assets) * 100, 2) if total_assets else 0.0,
+        }
+        for s, c in status_counts.items()
+    ]
+
+    dept_counts: Counter = Counter()
+    for a in assignments:
+        if a.employee and a.employee.department:
+            dept_counts[a.employee.department] += 1
+
+    department_usage = [
+        {
+            "department": dept,
+            "assetCount": count,
             "percentage": round((count / total_assets) * 100, 2) if total_assets else 0.0,
         }
-        for asset_type, count in asset_type_counts.items()
+        for dept, count in dept_counts.items()
+    ] if is_admin else []
+
+    recent_activity = []
+    for a in assignments:
+        emp_name = a.employee.employee_name if a.employee else "Unknown"
+        asset_name = a.asset.asset_name if a.asset else "Unknown"
+        if a.assigned_date:
+            recent_activity.append({
+                "description": f"{emp_name} was assigned {asset_name}",
+                "timestamp": a.assigned_date.isoformat(),
+            })
+        if a.returned_date:
+            recent_activity.append({
+                "description": f"{emp_name} returned {asset_name}",
+                "timestamp": a.returned_date.isoformat(),
+            })
+
+    recent_activity.sort(key=lambda x: x["timestamp"], reverse=True)
+    recent_activity = recent_activity[:10]
+
+    type_counts = Counter((getattr(a, "asset_type", None) or "General").title() for a in assets)
+    asset_types = [
+        {
+            "type": t,
+            "count": c,
+            "percentage": round((c / total_assets) * 100, 2) if total_assets else 0.0,
+        }
+        for t, c in type_counts.items()
     ]
 
     return {
@@ -107,3 +88,76 @@ def get_reports(period: str = "30d", db: Session = Depends(get_db)):
         "recentActivity": recent_activity,
         "assetTypes": asset_types,
     }
+
+
+@router.get("/")
+def get_reports(
+    period: str = "30d",
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    is_admin = current_user.role.role_name.lower() == "admin"
+
+    if is_admin:
+        assets = db.query(models.Asset).all()
+        assignments = db.query(models.Assignment).all()
+    else:
+        assignments = db.query(models.Assignment).filter(
+            models.Assignment.employee_id == current_user.employee_id
+        ).all()
+        asset_ids = [a.asset_id for a in assignments]
+        assets = db.query(models.Asset).filter(models.Asset.asset_id.in_(asset_ids)).all()
+
+    return _build_report_data(assignments, assets, is_admin, period)
+
+
+@router.get("/download")
+def download_report(
+    period: str = "30d",
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    is_admin = current_user.role.role_name.lower() == "admin"
+    now = datetime.utcnow()
+
+    if is_admin:
+        assignments = db.query(models.Assignment).all()
+    else:
+        assignments = db.query(models.Assignment).filter(
+            models.Assignment.employee_id == current_user.employee_id
+        ).all()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    if is_admin:
+        writer.writerow(["Assignment ID", "Employee Name", "Department", "Asset Name", "Status", "Assigned Date", "Returned Date"])
+        for a in assignments:
+            writer.writerow([
+                a.assignment_id,
+                a.employee.employee_name if a.employee else "Unknown",
+                a.employee.department if a.employee else "Unknown",
+                a.asset.asset_name if a.asset else "Unknown",
+                a.status,
+                a.assigned_date.strftime("%Y-%m-%d") if a.assigned_date else "",
+                a.returned_date.strftime("%Y-%m-%d") if a.returned_date else "",
+            ])
+    else:
+        writer.writerow(["Assignment ID", "Asset Name", "Status", "Assigned Date", "Returned Date"])
+        for a in assignments:
+            writer.writerow([
+                a.assignment_id,
+                a.asset.asset_name if a.asset else "Unknown",
+                a.status,
+                a.assigned_date.strftime("%Y-%m-%d") if a.assigned_date else "",
+                a.returned_date.strftime("%Y-%m-%d") if a.returned_date else "",
+            ])
+
+    output.seek(0)
+    filename = f"assettrack_report_{period}_{now.strftime('%Y%m%d')}.csv"
+
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )

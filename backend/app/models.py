@@ -16,10 +16,13 @@ class User(Base):
 
     user_id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     username = Column(String, unique=True)
+    email = Column(String, unique=True, nullable=True)
     password = Column(String)
-
     role_id = Column(Integer, ForeignKey("roles.role_id"))
+    employee_id = Column(Integer, ForeignKey("employees.employee_id"), nullable=True)
+
     role = relationship("Role")
+    employee = relationship("Employee", foreign_keys=[employee_id])
 
 
 class Employee(Base):
